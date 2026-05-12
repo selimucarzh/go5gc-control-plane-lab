@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ue-sim (mock)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/ue-sim",
+      "args": [
+        "--mode",
+        "mock",
+        "--count",
+        "3"
+      ]
+    },
+    {
+      "name": "ue-sim (http)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/ue-sim",
+      "args": [
+        "--mode",
+        "http",
+        "--base-url",
+        "http://127.0.0.1:8080",
+        "--count",
+        "1"
+      ]
+    }
+  ]
+}
