@@ -18,6 +18,15 @@
       "problemMatcher": [
         "$go"
       ]
+    },
+    {
+      "label": "go build cp-stub",
+      "type": "shell",
+      "command": "go build -o ./bin/cp-stub.exe ./cmd/cp-stub",
+      "group": "build",
+      "problemMatcher": [
+        "$go"
+      ]
     }
   ]
 }

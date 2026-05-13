@@ -2,6 +2,17 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "cp-stub",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/cp-stub",
+      "args": [
+        "--addr",
+        ":8080"
+      ]
+    },
+    {
       "name": "ue-sim (mock)",
       "type": "go",
       "request": "launch",
