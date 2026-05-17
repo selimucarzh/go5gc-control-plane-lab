@@ -65,6 +65,34 @@ curl http://127.0.0.1:8081/ues/imsi-001010000000001
 
 Bu hat özellikle şu sırayı görünür kılmak için ayrıldı: önce AMF, sonra SMF.
 
+## SMF v1 öğrenme hattı
+
+SMF artık ayrı bir servis olarak çalışır ve PDU Session oluşturmadan önce UE'nin AMF'de kayıtlı olduğunu doğrular:
+
+```text
+UE -> AMF registration
+UE -> SMF pdu-session create -> AMF UE lookup
+```
+
+Yeni SMF parçaları:
+
+- `cmd/smf`: SMF HTTP servisini başlatır
+- `internal/smf`: PDU Session handler, AMF HTTP client ve session context map
+- `internal/models`: PDU Session request/response sözleşmeleri
+
+Çalıştırma sırası:
+
+```powershell
+go run ./cmd/amf
+go run ./cmd/smf
+curl -X POST http://127.0.0.1:8081/registration `
+  -H "Content-Type: application/json" `
+  -d '{"supi":"imsi-001010000000001","plmn_id":"00101","access_type":"3GPP_ACCESS"}'
+curl -X POST http://127.0.0.1:8082/pdu-sessions `
+  -H "Content-Type: application/json" `
+  -d '{"supi":"imsi-001010000000001","session_id":10,"dnn":"internet","s_nssai":{"sst":1,"sd":"010203"}}'
+```
+
 ## Çalıştırma
 
 ### cp-stub
