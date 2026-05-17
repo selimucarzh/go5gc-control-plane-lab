@@ -38,6 +38,33 @@ internal/identity          IMSI/SUPI üretimi
 internal/sim               UE simülasyon akışı
 ```
 
+
+## AMF v1 öğrenme hattı
+
+Bu repo artık birleşik `cp-stub` yolunun yanında daha sade bir AMF başlangıcı da içerir:
+
+```text
+UE simulator -> AMF registration endpoint -> in-memory UE context map
+```
+
+Yeni AMF parçaları:
+
+- `cmd/amf`: yalnızca AMF HTTP servisini başlatır
+- `internal/amf`: registration handler ve UE context map
+- `internal/models`: registration request/response sözleşmesi
+
+Çalıştırma:
+
+```powershell
+go run ./cmd/amf
+curl -X POST http://127.0.0.1:8081/registration `
+  -H "Content-Type: application/json" `
+  -d '{"supi":"imsi-001010000000001","plmn_id":"00101","access_type":"3GPP_ACCESS"}'
+curl http://127.0.0.1:8081/ues/imsi-001010000000001
+```
+
+Bu hat özellikle şu sırayı görünür kılmak için ayrıldı: önce AMF, sonra SMF.
+
 ## Çalıştırma
 
 ### cp-stub
