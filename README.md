@@ -84,6 +84,9 @@ SMF components:
 - `internal/smf`: PDU session handler, AMF HTTP client, and session context map
 - `internal/models`: PDU session request/response contracts
 
+When running outside the same host, set `AMF_BASE_URL` for `smf`. The default remains
+`http://127.0.0.1:8081`, while the Kubernetes manifests use `http://amf:8081`.
+
 Run order:
 
 ```powershell
@@ -166,3 +169,42 @@ PDU session:
 - The default mode is `mock`, so the service can be tried independently during the first setup.
 - `cp-stub` currently runs as a stateful lab service and stores data in memory.
 - HTTP mode provides a small integration surface that can later connect to real AMF/SMF lab services.
+
+## Kubernetes deployment
+
+The `deploy/k8s` manifests run the separated AMF and SMF path in a namespace named `go5gc-lab`.
+If the cluster itself is not ready yet, see `docs/kubernetes-lab-bootstrap.md`.
+
+Build the local images:
+
+```bash
+docker build --build-arg SERVICE=amf -t go5gc-amf:dev .
+docker build --build-arg SERVICE=smf -t go5gc-smf:dev .
+```
+
+If your cluster uses containerd directly, import the images into the node runtime:
+
+```bash
+docker save go5gc-amf:dev | sudo ctr -n k8s.io images import -
+docker save go5gc-smf:dev | sudo ctr -n k8s.io images import -
+```
+
+Apply the manifests:
+
+```bash
+kubectl apply -k deploy/k8s
+kubectl get pods -n go5gc-lab
+```
+
+Test the flow from your workstation:
+
+```bash
+kubectl port-forward -n go5gc-lab svc/amf 8081:8081
+kubectl port-forward -n go5gc-lab svc/smf 8082:8082
+curl -X POST http://127.0.0.1:8081/registration \
+  -H "Content-Type: application/json" \
+  -d '{"supi":"imsi-001010000000001","plmn_id":"00101","access_type":"3GPP_ACCESS"}'
+curl -X POST http://127.0.0.1:8082/pdu-sessions \
+  -H "Content-Type: application/json" \
+  -d '{"supi":"imsi-001010000000001","session_id":10,"dnn":"internet","s_nssai":{"sst":1,"sd":"010203"}}'
+```
