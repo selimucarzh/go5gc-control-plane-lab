@@ -26,6 +26,13 @@ The initial services:
 - Keeps UE and PDU session state in memory
 - Rejects PDU session creation for unregistered UEs
 
+`lab-viewer`
+
+- Starts AMF, SMF, and a local browser UI together
+- Shows the UE -> AMF -> SMF topology
+- Runs real registration and PDU session HTTP calls through a local proxy
+- Records request and response details as a sequence trace
+
 ## Directory structure
 
 ```text
@@ -33,6 +40,7 @@ cmd/ue-sim                 CLI entry point
 cmd/cp-stub                Control-plane stub entry point
 cmd/amf                    AMF service entry point
 cmd/smf                    SMF service entry point
+cmd/lab-viewer             Local educational UI for the AMF/SMF flow
 internal/cpstub            HTTP handlers and in-memory state
 internal/config            Runtime configuration
 internal/controlplane      HTTP and mock control-plane clients
@@ -68,6 +76,30 @@ curl http://127.0.0.1:8081/ues/imsi-001010000000001
 ```
 
 This path keeps the learning sequence explicit: AMF first, then SMF.
+
+## Local visual lab
+
+For an interactive localhost view of the current learning path, run:
+
+```bash
+go run ./cmd/lab-viewer
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8090
+```
+
+The lab viewer starts:
+
+- AMF on `127.0.0.1:8081`
+- SMF on `127.0.0.1:8082`
+- browser UI on `127.0.0.1:8090`
+
+Use the UI to register a UE, create a PDU session, or run the full flow. The
+screen shows the topology and a step-by-step trace of the JSON request and
+response payloads.
 
 ## SMF v1 learning path
 

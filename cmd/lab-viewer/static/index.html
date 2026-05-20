@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>go5gc Control Plane Lab</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">5GC control plane learning lab</p>
+        <h1>AMF registration and SMF PDU session flow</h1>
+      </div>
+      <div class="status-strip" aria-label="service status">
+        <span id="amfStatus" class="status-dot pending">AMF</span>
+        <span id="smfStatus" class="status-dot pending">SMF</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="topology" aria-labelledby="topologyTitle">
+        <div class="section-heading">
+          <h2 id="topologyTitle">Topology</h2>
+          <p>Localhost view of the separated AMF and SMF path.</p>
+        </div>
+
+        <div class="diagram" aria-label="UE AMF SMF topology diagram">
+          <article class="node ue">
+            <span class="node-type">UE simulator</span>
+            <strong>imsi-001010000000001</strong>
+            <small>Creates registration and PDU requests</small>
+          </article>
+          <div class="link">
+            <span>POST /registration</span>
+          </div>
+          <article class="node amf">
+            <span class="node-type">AMF</span>
+            <strong>127.0.0.1:8081</strong>
+            <small>Stores UE context in memory</small>
+          </article>
+          <div class="link verify">
+            <span>GET /ues/{supi}</span>
+          </div>
+          <article class="node smf">
+            <span class="node-type">SMF</span>
+            <strong>127.0.0.1:8082</strong>
+            <small>Creates a PDU session after AMF verification</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="control-panel">
+          <div class="section-heading">
+            <h2>Run The Flow</h2>
+            <p>Use real local HTTP calls through the lab viewer proxy.</p>
+          </div>
+
+          <form id="flowForm">
+            <label>
+              <span>SUPI</span>
+              <input name="supi" value="imsi-001010000000001" autocomplete="off">
+            </label>
+            <div class="field-grid">
+              <label>
+                <span>PLMN ID</span>
+                <input name="plmn" value="00101" autocomplete="off">
+              </label>
+              <label>
+                <span>Access</span>
+                <select name="access">
+                  <option>3GPP_ACCESS</option>
+                  <option>NON_3GPP_ACCESS</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>Session ID</span>
+                <input name="session" type="number" min="1" value="10">
+              </label>
+              <label>
+                <span>DNN</span>
+                <input name="dnn" value="internet" autocomplete="off">
+              </label>
+            </div>
+            <div class="field-grid">
+              <label>
+                <span>SST</span>
+                <input name="sst" type="number" min="1" value="1">
+              </label>
+              <label>
+                <span>SD</span>
+                <input name="sd" value="010203" autocomplete="off">
+              </label>
+            </div>
+            <div class="button-row">
+              <button type="button" id="registerBtn">Register UE</button>
+              <button type="button" id="pduBtn">Create PDU Session</button>
+              <button type="button" id="fullFlowBtn">Run Full Flow</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="trace-panel">
+          <div class="section-heading">
+            <h2>Sequence Trace</h2>
+            <p>Each step records request, response, and status code.</p>
+          </div>
+          <ol id="timeline" class="timeline">
+            <li class="empty">No calls yet.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="learning">
+        <div class="section-heading">
+          <h2>What This Shows</h2>
+          <p>The current repository implements the minimum useful control-plane split.</p>
+        </div>
+        <div class="learning-grid">
+          <article>
+            <h3>Registration</h3>
+            <p>AMF accepts SUPI, PLMN, and access type, then stores a UE context in memory.</p>
+          </article>
+          <article>
+            <h3>Verification</h3>
+            <p>SMF asks AMF for the UE context before creating any PDU session.</p>
+          </article>
+          <article>
+            <h3>Session State</h3>
+            <p>SMF stores session context by SUPI and session ID, returning an existing session when repeated.</p>
+          </article>
+          <article>
+            <h3>Kubernetes Step</h3>
+            <p>The same AMF and SMF binaries can be built into local images and deployed with deploy/k8s.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
