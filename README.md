@@ -101,6 +101,25 @@ Use the UI to register a UE, create a PDU session, or run the full flow. The
 screen shows the topology and a step-by-step trace of the JSON request and
 response payloads.
 
+## Dash recap interface
+
+The repository also includes a Python Dash recap UI that explains the learning
+stages completed so far and what each stage is useful for:
+
+```bash
+cd tools/dash-lab
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8050
+```
+
 ## SMF v1 learning path
 
 SMF runs as a separate service and verifies that the UE is registered in AMF before creating a PDU session:
