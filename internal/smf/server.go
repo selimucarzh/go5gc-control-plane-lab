@@ -57,6 +57,9 @@ func (c *HTTPAMFClient) GetUEContext(supi string) (amf.UEContext, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&ctx); err != nil {
 		return amf.UEContext{}, fmt.Errorf("decode ue context: %w", err)
 	}
+	if ctx.RegistrationState != amf.RegistrationStateRegistered {
+		return amf.UEContext{}, errUENotRegistered
+	}
 	return ctx, nil
 }
 
