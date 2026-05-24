@@ -164,6 +164,134 @@ func TestDeregisteredUECannotResumeService(t *testing.T) {
 	}
 }
 
+func TestAuthenticationChallengeAndConfirm(t *testing.T) {
+	server := NewServer("amf-001")
+	supi := "imsi-001010000000001"
+	registerUE(t, server, supi)
+
+	challenge := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/authentication", nil)
+	challengeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(challengeResponse, challenge)
+	if challengeResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, challengeResponse.Code)
+	}
+
+	var auth AuthenticationResponse
+	if err := json.NewDecoder(challengeResponse.Body).Decode(&auth); err != nil {
+		t.Fatalf("decode authentication response: %v", err)
+	}
+	if auth.Status != AuthenticationStatusChallengeSent {
+		t.Fatalf("authentication status mismatch: got %s", auth.Status)
+	}
+	if auth.Vector.XRESStar == "" {
+		t.Fatal("expected xres_star in authentication vector")
+	}
+
+	confirmBody := mustJSON(t, AuthenticationConfirmRequest{RESStar: auth.Vector.XRESStar})
+	confirm := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/authentication/confirm", bytes.NewReader(confirmBody))
+	confirmResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(confirmResponse, confirm)
+	if confirmResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, confirmResponse.Code)
+	}
+
+	var confirmed AuthenticationResponse
+	if err := json.NewDecoder(confirmResponse.Body).Decode(&confirmed); err != nil {
+		t.Fatalf("decode authentication confirm response: %v", err)
+	}
+	if confirmed.Status != AuthenticationStatusSuccess {
+		t.Fatalf("authentication status mismatch: got %s", confirmed.Status)
+	}
+}
+
+func TestAuthenticationRejectsWrongResponse(t *testing.T) {
+	server := NewServer("amf-001")
+	supi := "imsi-001010000000001"
+	registerUE(t, server, supi)
+
+	challenge := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/authentication", nil)
+	challengeResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(challengeResponse, challenge)
+	if challengeResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, challengeResponse.Code)
+	}
+
+	confirmBody := mustJSON(t, AuthenticationConfirmRequest{RESStar: "wrong-response"})
+	confirm := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/authentication/confirm", bytes.NewReader(confirmBody))
+	confirmResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(confirmResponse, confirm)
+	if confirmResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, confirmResponse.Code)
+	}
+}
+
+func TestNASMessageRunsServiceAndDeregistrationProcedures(t *testing.T) {
+	server := NewServer("amf-001")
+	supi := "imsi-001010000000001"
+	registerUE(t, server, supi)
+
+	release := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/release", nil)
+	releaseResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(releaseResponse, release)
+	if releaseResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, releaseResponse.Code)
+	}
+
+	serviceBody := mustJSON(t, NASMessageRequest{
+		SUPI:        supi,
+		MessageType: NASMessageServiceRequest,
+	})
+	service := httptest.NewRequest(http.MethodPost, "/nas", bytes.NewReader(serviceBody))
+	serviceResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(serviceResponse, service)
+	if serviceResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, serviceResponse.Code)
+	}
+	assertUEState(t, server, supi, ConnectionStateConnected)
+
+	deregistrationBody := mustJSON(t, NASMessageRequest{
+		SUPI:        supi,
+		MessageType: NASMessageDeregistrationRequest,
+	})
+	deregistration := httptest.NewRequest(http.MethodPost, "/nas", bytes.NewReader(deregistrationBody))
+	deregistrationResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deregistrationResponse, deregistration)
+	if deregistrationResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, deregistrationResponse.Code)
+	}
+}
+
+func TestProcedureEventsAreRecordedPerUE(t *testing.T) {
+	server := NewServer("amf-001")
+	supi := "imsi-001010000000001"
+	registerUE(t, server, supi)
+
+	release := httptest.NewRequest(http.MethodPost, "/ues/"+supi+"/release", nil)
+	releaseResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(releaseResponse, release)
+	if releaseResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, releaseResponse.Code)
+	}
+
+	events := httptest.NewRequest(http.MethodGet, "/ues/"+supi+"/events", nil)
+	eventsResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(eventsResponse, events)
+	if eventsResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, eventsResponse.Code)
+	}
+
+	var payload EventListResponse
+	if err := json.NewDecoder(eventsResponse.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode event list: %v", err)
+	}
+	if payload.Count < 2 {
+		t.Fatalf("expected at least two procedure events, got %d", payload.Count)
+	}
+	if payload.Items[0].Procedure != "Registration" {
+		t.Fatalf("expected first event to be Registration, got %s", payload.Items[0].Procedure)
+	}
+}
+
 func registerUE(t *testing.T, server *Server, supi string) {
 	t.Helper()
 	body := mustJSON(t, models.RegistrationRequest{

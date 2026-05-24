@@ -30,6 +30,13 @@ type UEContext struct {
 	DeregisteredAt       *time.Time      `json:"deregistered_at,omitempty"`
 }
 
+type AuthenticationVector struct {
+	RAND      string    `json:"rand"`
+	AUTN      string    `json:"autn"`
+	XRESStar  string    `json:"xres_star"`
+	Generated time.Time `json:"generated"`
+}
+
 type SecurityContext struct {
 	ID              string    `json:"id"`
 	Algorithm       string    `json:"algorithm"`
@@ -52,18 +59,58 @@ type ProcedureResponse struct {
 	At       time.Time `json:"at"`
 }
 
+type AuthenticationResponse struct {
+	Accepted bool                 `json:"accepted"`
+	AMFID    string               `json:"amf_id"`
+	SUPI     string               `json:"supi"`
+	Status   string               `json:"status"`
+	Vector   AuthenticationVector `json:"vector,omitempty"`
+	Message  string               `json:"message"`
+	At       time.Time            `json:"at"`
+}
+
+type AuthenticationConfirmRequest struct {
+	RESStar string `json:"res_star"`
+}
+
+type NASMessageRequest struct {
+	SUPI         string                      `json:"supi"`
+	MessageType  string                      `json:"message_type"`
+	Registration *models.RegistrationRequest `json:"registration,omitempty"`
+}
+
+type ProcedureEvent struct {
+	ID          int       `json:"id"`
+	SUPI        string    `json:"supi,omitempty"`
+	Procedure   string    `json:"procedure"`
+	Step        string    `json:"step"`
+	Direction   string    `json:"direction"`
+	MessageType string    `json:"message_type"`
+	Detail      string    `json:"detail"`
+	At          time.Time `json:"at"`
+}
+
+type EventListResponse struct {
+	Count int              `json:"count"`
+	Items []ProcedureEvent `json:"items"`
+}
+
 type Server struct {
-	amfID string
-	mu    sync.RWMutex
-	ues   map[string]UEContext
-	mux   *http.ServeMux
+	amfID       string
+	mu          sync.RWMutex
+	ues         map[string]UEContext
+	authVectors map[string]AuthenticationVector
+	events      []ProcedureEvent
+	nextEventID int
+	mux         *http.ServeMux
 }
 
 func NewServer(amfID string) *Server {
 	server := &Server{
-		amfID: amfID,
-		ues:   make(map[string]UEContext),
-		mux:   http.NewServeMux(),
+		amfID:       amfID,
+		ues:         make(map[string]UEContext),
+		authVectors: make(map[string]AuthenticationVector),
+		mux:         http.NewServeMux(),
 	}
 	server.routes()
 	return server
@@ -75,6 +122,8 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
+	s.mux.HandleFunc("/events", s.handleEvents)
+	s.mux.HandleFunc("/nas", s.handleNASMessage)
 	s.mux.HandleFunc("/registration", s.handleRegistration)
 	s.mux.HandleFunc("/ues", s.handleUECollection)
 	s.mux.HandleFunc("/ues/", s.handleUEResource)
@@ -86,6 +135,53 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	items := append([]ProcedureEvent(nil), s.events...)
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, EventListResponse{Count: len(items), Items: items})
+}
+
+func (s *Server) handleNASMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req NASMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+
+	switch req.MessageType {
+	case NASMessageRegistrationRequest:
+		if req.Registration == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "registration payload is required"})
+			return
+		}
+		s.handleRegistrationProcedure(w, *req.Registration)
+	case NASMessageServiceRequest:
+		if req.SUPI == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "supi is required"})
+			return
+		}
+		s.acceptServiceRequest(w, req.SUPI)
+	case NASMessageDeregistrationRequest:
+		if req.SUPI == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "supi is required"})
+			return
+		}
+		s.acceptDeregistration(w, req.SUPI)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported nas message_type"})
+	}
 }
 
 func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +196,10 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.handleRegistrationProcedure(w, req)
+}
+
+func (s *Server) handleRegistrationProcedure(w http.ResponseWriter, req models.RegistrationRequest) {
 	if req.SUPI == "" || req.PLMNID == "" || req.AccessType == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "supi, plmn_id and access_type are required"})
 		return
@@ -115,6 +215,7 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		guti = generateGUTI(s.amfID, req.SUPI)
 	}
 	allowedNSSAI := allowedNSSAI(req.RequestedNSSAI)
+	securityContext := newSecurityContext(req.SUPI, now)
 	ctx := UEContext{
 		UEID:                 fmt.Sprintf("ue-%s", req.SUPI),
 		SUPI:                 req.SUPI,
@@ -124,7 +225,7 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 		RegistrationState:    RegistrationStateRegistered,
 		ConnectionState:      ConnectionStateConnected,
 		AuthenticationStatus: AuthenticationStatusSuccess,
-		SecurityContext:      newSecurityContext(req.SUPI, now),
+		SecurityContext:      securityContext,
 		AllowedNSSAI:         allowedNSSAI,
 		RegisteredAt:         now,
 		LastSeenAt:           now,
@@ -132,6 +233,7 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.ues[req.SUPI] = ctx
+	s.appendEventLocked(req.SUPI, "Registration", "accept", "UE->AMF", "RegistrationRequest", "UE context stored and security context established", now)
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusCreated, models.RegistrationResponse{
@@ -164,6 +266,9 @@ func (s *Server) handleUECollection(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.mu.Lock()
 		s.ues = make(map[string]UEContext)
+		s.authVectors = make(map[string]AuthenticationVector)
+		s.events = nil
+		s.nextEventID = 0
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "amf state reset"})
 	default:
@@ -189,13 +294,21 @@ func (s *Server) handleUEResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 {
 		switch parts[1] {
+		case "authentication":
+			s.handleAuthenticationStart(w, r, supi)
 		case "service-request":
 			s.handleServiceRequest(w, r, supi)
 		case "release":
 			s.handleConnectionRelease(w, r, supi)
+		case "events":
+			s.handleUEEvents(w, r, supi)
 		default:
 			http.NotFound(w, r)
 		}
+		return
+	}
+	if len(parts) == 3 && parts[1] == "authentication" && parts[2] == "confirm" {
+		s.handleAuthenticationConfirm(w, r, supi)
 		return
 	}
 	http.NotFound(w, r)
@@ -211,28 +324,94 @@ func (s *Server) handleSingleUE(w http.ResponseWriter, r *http.Request, supi str
 		}
 		writeJSON(w, http.StatusOK, ctx)
 	case http.MethodDelete:
-		ctx, ok := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
-			ctx.RegistrationState = RegistrationStateDeregistered
-			ctx.ConnectionState = ConnectionStateIdle
-			ctx.LastSeenAt = now
-			ctx.DeregisteredAt = &now
-			return ctx
-		})
-		if !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
-			return
-		}
-		writeJSON(w, http.StatusOK, ProcedureResponse{
-			Accepted: true,
-			AMFID:    s.amfID,
-			SUPI:     ctx.SUPI,
-			State:    ctx.RegistrationState,
-			Message:  "ue deregistered",
-			At:       ctx.LastSeenAt,
-		})
+		s.acceptDeregistration(w, supi)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleAuthenticationStart(w http.ResponseWriter, r *http.Request, supi string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	current, ok := s.getUE(supi)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
+		return
+	}
+	if current.RegistrationState != RegistrationStateRegistered {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ue is not registered"})
+		return
+	}
+	vector := newAuthenticationVector(supi, time.Now().UTC())
+	ctx, _ := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+		ctx.AuthenticationStatus = AuthenticationStatusChallengeSent
+		ctx.LastSeenAt = now
+		return ctx
+	}, "Authentication", "challenge", "AMF->UE", "AuthenticationRequest", "Authentication vector generated")
+
+	s.mu.Lock()
+	s.authVectors[supi] = vector
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, AuthenticationResponse{
+		Accepted: true,
+		AMFID:    s.amfID,
+		SUPI:     supi,
+		Status:   ctx.AuthenticationStatus,
+		Vector:   vector,
+		Message:  "authentication challenge generated",
+		At:       ctx.LastSeenAt,
+	})
+}
+
+func (s *Server) handleAuthenticationConfirm(w http.ResponseWriter, r *http.Request, supi string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req AuthenticationConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+
+	s.mu.RLock()
+	vector, hasVector := s.authVectors[supi]
+	s.mu.RUnlock()
+	if !hasVector {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "authentication challenge is missing"})
+		return
+	}
+	if req.RESStar != vector.XRESStar {
+		_, _ = s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+			ctx.AuthenticationStatus = AuthenticationStatusFailed
+			ctx.LastSeenAt = now
+			return ctx
+		}, "Authentication", "reject", "UE->AMF", "AuthenticationResponse", "Authentication response did not match expected result")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed"})
+		return
+	}
+
+	ctx, ok := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+		ctx.AuthenticationStatus = AuthenticationStatusSuccess
+		ctx.SecurityContext = newSecurityContext(supi, now)
+		ctx.LastSeenAt = now
+		return ctx
+	}, "Authentication", "confirm", "UE->AMF", "AuthenticationResponse", "Authentication response accepted and security context refreshed")
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, AuthenticationResponse{
+		Accepted: true,
+		AMFID:    s.amfID,
+		SUPI:     supi,
+		Status:   ctx.AuthenticationStatus,
+		Message:  "authentication accepted",
+		At:       ctx.LastSeenAt,
+	})
 }
 
 func (s *Server) handleServiceRequest(w http.ResponseWriter, r *http.Request, supi string) {
@@ -240,21 +419,24 @@ func (s *Server) handleServiceRequest(w http.ResponseWriter, r *http.Request, su
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ctx, ok := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
-		if ctx.RegistrationState == RegistrationStateRegistered {
-			ctx.ConnectionState = ConnectionStateConnected
-			ctx.LastSeenAt = now
-		}
-		return ctx
-	})
+	s.acceptServiceRequest(w, supi)
+}
+
+func (s *Server) acceptServiceRequest(w http.ResponseWriter, supi string) {
+	current, ok := s.getUE(supi)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
 		return
 	}
-	if ctx.RegistrationState != RegistrationStateRegistered {
+	if current.RegistrationState != RegistrationStateRegistered {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "ue is not registered"})
 		return
 	}
+	ctx, _ := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+		ctx.ConnectionState = ConnectionStateConnected
+		ctx.LastSeenAt = now
+		return ctx
+	}, "ServiceRequest", "accept", "UE->AMF", "ServiceRequest", "UE connection state moved to CM_CONNECTED")
 	writeJSON(w, http.StatusOK, ProcedureResponse{
 		Accepted: true,
 		AMFID:    s.amfID,
@@ -270,21 +452,20 @@ func (s *Server) handleConnectionRelease(w http.ResponseWriter, r *http.Request,
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ctx, ok := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
-		if ctx.RegistrationState == RegistrationStateRegistered {
-			ctx.ConnectionState = ConnectionStateIdle
-			ctx.LastSeenAt = now
-		}
-		return ctx
-	})
+	current, ok := s.getUE(supi)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
 		return
 	}
-	if ctx.RegistrationState != RegistrationStateRegistered {
+	if current.RegistrationState != RegistrationStateRegistered {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "ue is not registered"})
 		return
 	}
+	ctx, _ := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+		ctx.ConnectionState = ConnectionStateIdle
+		ctx.LastSeenAt = now
+		return ctx
+	}, "ConnectionRelease", "accept", "AMF->UE", "UEContextReleaseCommand", "UE connection state moved to CM_IDLE")
 	writeJSON(w, http.StatusOK, ProcedureResponse{
 		Accepted: true,
 		AMFID:    s.amfID,
@@ -295,6 +476,44 @@ func (s *Server) handleConnectionRelease(w http.ResponseWriter, r *http.Request,
 	})
 }
 
+func (s *Server) acceptDeregistration(w http.ResponseWriter, supi string) {
+	ctx, ok := s.updateUE(supi, func(ctx UEContext, now time.Time) UEContext {
+		ctx.RegistrationState = RegistrationStateDeregistered
+		ctx.ConnectionState = ConnectionStateIdle
+		ctx.LastSeenAt = now
+		ctx.DeregisteredAt = &now
+		return ctx
+	}, "Deregistration", "accept", "UE->AMF", NASMessageDeregistrationRequest, "UE registration state moved to DEREGISTERED")
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ue not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, ProcedureResponse{
+		Accepted: true,
+		AMFID:    s.amfID,
+		SUPI:     ctx.SUPI,
+		State:    ctx.RegistrationState,
+		Message:  "ue deregistered",
+		At:       ctx.LastSeenAt,
+	})
+}
+
+func (s *Server) handleUEEvents(w http.ResponseWriter, r *http.Request, supi string) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	items := make([]ProcedureEvent, 0)
+	for _, event := range s.events {
+		if event.SUPI == supi {
+			items = append(items, event)
+		}
+	}
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, EventListResponse{Count: len(items), Items: items})
+}
+
 func (s *Server) getUE(supi string) (UEContext, bool) {
 	s.mu.RLock()
 	ctx, ok := s.ues[supi]
@@ -302,16 +521,42 @@ func (s *Server) getUE(supi string) (UEContext, bool) {
 	return ctx, ok
 }
 
-func (s *Server) updateUE(supi string, update func(UEContext, time.Time) UEContext) (UEContext, bool) {
+func (s *Server) updateUE(
+	supi string,
+	update func(UEContext, time.Time) UEContext,
+	procedure string,
+	step string,
+	direction string,
+	messageType string,
+	detail string,
+) (UEContext, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ctx, ok := s.ues[supi]
 	if !ok {
 		return UEContext{}, false
 	}
-	ctx = update(ctx, time.Now().UTC())
+	now := time.Now().UTC()
+	ctx = update(ctx, now)
 	s.ues[supi] = ctx
+	if procedure != "" {
+		s.appendEventLocked(supi, procedure, step, direction, messageType, detail, now)
+	}
 	return ctx, true
+}
+
+func (s *Server) appendEventLocked(supi, procedure, step, direction, messageType, detail string, now time.Time) {
+	s.nextEventID++
+	s.events = append(s.events, ProcedureEvent{
+		ID:          s.nextEventID,
+		SUPI:        supi,
+		Procedure:   procedure,
+		Step:        step,
+		Direction:   direction,
+		MessageType: messageType,
+		Detail:      detail,
+		At:          now,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -361,17 +606,33 @@ func newSecurityContext(supi string, now time.Time) SecurityContext {
 	}
 }
 
+func newAuthenticationVector(supi string, now time.Time) AuthenticationVector {
+	ref := strings.TrimPrefix(supi, "imsi-")
+	return AuthenticationVector{
+		RAND:      "rand-" + ref,
+		AUTN:      "autn-" + ref,
+		XRESStar:  "xres-" + ref,
+		Generated: now,
+	}
+}
+
 func generateGUTI(amfID, supi string) string {
 	ref := strings.TrimPrefix(supi, "imsi-")
 	return fmt.Sprintf("guti-%s-%s", amfID, ref)
 }
 
 const (
-	RegistrationStateRegistered   = "REGISTERED"
-	RegistrationStateDeregistered = "DEREGISTERED"
-	ConnectionStateConnected      = "CM_CONNECTED"
-	ConnectionStateIdle           = "CM_IDLE"
-	AuthenticationStatusSuccess   = "SUCCESS"
+	RegistrationStateRegistered       = "REGISTERED"
+	RegistrationStateDeregistered     = "DEREGISTERED"
+	ConnectionStateConnected          = "CM_CONNECTED"
+	ConnectionStateIdle               = "CM_IDLE"
+	AuthenticationStatusSuccess       = "SUCCESS"
+	AuthenticationStatusChallengeSent = "CHALLENGE_SENT"
+	AuthenticationStatusFailed        = "FAILED"
+
+	NASMessageRegistrationRequest   = "RegistrationRequest"
+	NASMessageServiceRequest        = "ServiceRequest"
+	NASMessageDeregistrationRequest = "DeregistrationRequest"
 )
 
 var (
