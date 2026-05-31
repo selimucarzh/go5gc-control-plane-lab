@@ -1,6 +1,7 @@
 package amf
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,9 +75,25 @@ type AuthenticationConfirmRequest struct {
 }
 
 type NASMessageRequest struct {
-	SUPI         string                      `json:"supi"`
-	MessageType  string                      `json:"message_type"`
-	Registration *models.RegistrationRequest `json:"registration,omitempty"`
+	ProtocolDiscriminator string                      `json:"protocol_discriminator,omitempty"`
+	SecurityHeaderType    string                      `json:"security_header_type,omitempty"`
+	MessageType           string                      `json:"message_type"`
+	SequenceNumber        int                         `json:"sequence_number,omitempty"`
+	SUPI                  string                      `json:"supi,omitempty"`
+	Payload               *NASMessagePayload          `json:"payload,omitempty"`
+	Registration          *models.RegistrationRequest `json:"registration,omitempty"`
+}
+
+type NASMessagePayload struct {
+	SUPI                 string          `json:"supi,omitempty"`
+	GUTI                 string          `json:"guti,omitempty"`
+	PLMNID               string          `json:"plmn_id,omitempty"`
+	AccessType           string          `json:"access_type,omitempty"`
+	RegistrationType     string          `json:"registration_type,omitempty"`
+	NGKSI                int             `json:"ngksi,omitempty"`
+	RequestedNSSAI       []models.SNSSAI `json:"requested_nssai,omitempty"`
+	UEMMCapability       []string        `json:"ue_mm_capability,omitempty"`
+	UESecurityCapability []string        `json:"ue_security_capability,omitempty"`
 }
 
 type ProcedureEvent struct {
@@ -162,26 +179,119 @@ func (s *Server) handleNASMessage(w http.ResponseWriter, r *http.Request) {
 
 	switch req.MessageType {
 	case NASMessageRegistrationRequest:
-		if req.Registration == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "registration payload is required"})
+		registration, err := req.registrationRequest()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		s.handleRegistrationProcedure(w, *req.Registration)
+		if err := validateNASEnvelope(req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.handleRegistrationProcedure(w, registration)
 	case NASMessageServiceRequest:
-		if req.SUPI == "" {
+		supi := req.supi()
+		if supi == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "supi is required"})
 			return
 		}
-		s.acceptServiceRequest(w, req.SUPI)
+		if err := validateNASEnvelope(req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.acceptServiceRequest(w, supi)
 	case NASMessageDeregistrationRequest:
-		if req.SUPI == "" {
+		supi := req.supi()
+		if supi == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "supi is required"})
 			return
 		}
-		s.acceptDeregistration(w, req.SUPI)
+		if err := validateNASEnvelope(req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		s.acceptDeregistration(w, supi)
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported nas message_type"})
 	}
+}
+
+func (req NASMessageRequest) registrationRequest() (models.RegistrationRequest, error) {
+	if req.Payload != nil {
+		if req.Payload.SUPI == "" || req.Payload.PLMNID == "" || req.Payload.AccessType == "" {
+			return models.RegistrationRequest{}, errors.New("payload.supi, payload.plmn_id and payload.access_type are required")
+		}
+		return models.RegistrationRequest{
+			SUPI:           req.Payload.SUPI,
+			GUTI:           req.Payload.GUTI,
+			PLMNID:         req.Payload.PLMNID,
+			AccessType:     req.Payload.AccessType,
+			RequestedNSSAI: req.Payload.RequestedNSSAI,
+		}, nil
+	}
+	if req.Registration == nil {
+		return models.RegistrationRequest{}, errors.New("registration payload is required")
+	}
+	return *req.Registration, nil
+}
+
+func (req NASMessageRequest) supi() string {
+	if req.Payload != nil && req.Payload.SUPI != "" {
+		return req.Payload.SUPI
+	}
+	return req.SUPI
+}
+
+func validateNASEnvelope(req NASMessageRequest) error {
+	if req.ProtocolDiscriminator != "" && req.ProtocolDiscriminator != NASProtocolDiscriminator5GMM {
+		return fmt.Errorf("protocol_discriminator %s is not supported", req.ProtocolDiscriminator)
+	}
+	if req.SecurityHeaderType != "" {
+		if _, ok := supportedSecurityHeaderTypes[req.SecurityHeaderType]; !ok {
+			return fmt.Errorf("security_header_type %s is not supported", req.SecurityHeaderType)
+		}
+	}
+	if req.SequenceNumber < 0 {
+		return errors.New("sequence_number must be zero or greater")
+	}
+	return nil
+}
+
+func (req *NASMessageRequest) UnmarshalJSON(data []byte) error {
+	type alias NASMessageRequest
+	var decoded struct {
+		alias
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*req = NASMessageRequest(decoded.alias)
+	if len(decoded.Payload) == 0 || bytes.Equal(decoded.Payload, []byte("null")) {
+		return nil
+	}
+
+	switch req.MessageType {
+	case NASMessageRegistrationRequest:
+		var payload NASMessagePayload
+		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
+			return err
+		}
+		req.Payload = &payload
+	case NASMessageServiceRequest, NASMessageDeregistrationRequest:
+		var payload NASMessagePayload
+		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
+			return err
+		}
+		req.Payload = &payload
+	default:
+		var payload NASMessagePayload
+		if err := json.Unmarshal(decoded.Payload, &payload); err == nil {
+			req.Payload = &payload
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
@@ -633,6 +743,11 @@ const (
 	NASMessageRegistrationRequest   = "RegistrationRequest"
 	NASMessageServiceRequest        = "ServiceRequest"
 	NASMessageDeregistrationRequest = "DeregistrationRequest"
+
+	NASProtocolDiscriminator5GMM       = "5GMM"
+	NASSecurityHeaderPlain             = "plain_5gs_nas_message"
+	NASSecurityHeaderIntegrity         = "integrity_protected"
+	NASSecurityHeaderIntegrityCiphered = "integrity_protected_and_ciphered"
 )
 
 var (
@@ -642,5 +757,11 @@ var (
 	supportedAccessTypes = map[string]struct{}{
 		"3GPP_ACCESS":     {},
 		"NON_3GPP_ACCESS": {},
+	}
+
+	supportedSecurityHeaderTypes = map[string]struct{}{
+		NASSecurityHeaderPlain:             {},
+		NASSecurityHeaderIntegrity:         {},
+		NASSecurityHeaderIntegrityCiphered: {},
 	}
 )

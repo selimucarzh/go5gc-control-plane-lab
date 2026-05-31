@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -20,6 +21,11 @@ type SessionContext struct {
 	SNSSAI     models.SNSSAI `json:"s_nssai"`
 	SessionRef string        `json:"session_ref"`
 	CreatedAt  time.Time     `json:"created_at"`
+}
+
+type SessionListResponse struct {
+	Count int              `json:"count"`
+	Items []SessionContext `json:"items"`
 }
 
 type AMFClient interface {
@@ -86,7 +92,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
-	s.mux.HandleFunc("/pdu-sessions", s.handleCreatePDUSession)
+	s.mux.HandleFunc("/pdu-sessions", s.handlePDUSessions)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -97,12 +103,32 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleCreatePDUSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (s *Server) handlePDUSessions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListPDUSessions(w)
+	case http.MethodPost:
+		s.handleCreatePDUSession(w, r)
+	case http.MethodDelete:
+		s.handleResetPDUSessions(w)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
+}
 
+func (s *Server) handleListPDUSessions(w http.ResponseWriter) {
+	items := s.listSessions()
+	writeJSON(w, http.StatusOK, SessionListResponse{Count: len(items), Items: items})
+}
+
+func (s *Server) handleResetPDUSessions(w http.ResponseWriter) {
+	s.mu.Lock()
+	s.sessions = make(map[string]map[int]SessionContext)
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "smf state reset"})
+}
+
+func (s *Server) handleCreatePDUSession(w http.ResponseWriter, r *http.Request) {
 	var req models.PDUSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -159,6 +185,25 @@ func (s *Server) createSession(req models.PDUSessionRequest) (SessionContext, bo
 	}
 	s.sessions[req.SUPI][req.SessionID] = ctx
 	return ctx, true
+}
+
+func (s *Server) listSessions() []SessionContext {
+	s.mu.RLock()
+	items := make([]SessionContext, 0)
+	for _, byID := range s.sessions {
+		for _, ctx := range byID {
+			items = append(items, ctx)
+		}
+	}
+	s.mu.RUnlock()
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].SUPI == items[j].SUPI {
+			return items[i].SessionID < items[j].SessionID
+		}
+		return items[i].SUPI < items[j].SUPI
+	})
+	return items
 }
 
 func validatePDUSessionRequest(req models.PDUSessionRequest) error {

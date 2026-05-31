@@ -261,6 +261,69 @@ func TestNASMessageRunsServiceAndDeregistrationProcedures(t *testing.T) {
 	}
 }
 
+func TestNASRegistrationEnvelopeStoresUEContext(t *testing.T) {
+	server := NewServer("amf-001")
+	body := mustJSON(t, NASMessageRequest{
+		ProtocolDiscriminator: NASProtocolDiscriminator5GMM,
+		SecurityHeaderType:    NASSecurityHeaderPlain,
+		MessageType:           NASMessageRegistrationRequest,
+		SequenceNumber:        1,
+		Payload: &NASMessagePayload{
+			SUPI:                 "imsi-001010000000001",
+			PLMNID:               "00101",
+			AccessType:           "3GPP_ACCESS",
+			RegistrationType:     "initial_registration",
+			NGKSI:                1,
+			RequestedNSSAI:       []models.SNSSAI{{SST: 1, SD: "010203"}},
+			UEMMCapability:       []string{"s1_mode", "ho_attach"},
+			UESecurityCapability: []string{"nea2", "nia2"},
+		},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/nas", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d", http.StatusCreated, response.Code)
+	}
+
+	var registration models.RegistrationResponse
+	if err := json.NewDecoder(response.Body).Decode(&registration); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	if registration.RegistrationState != RegistrationStateRegistered {
+		t.Fatalf("registration state mismatch: got %s", registration.RegistrationState)
+	}
+
+	lookup := httptest.NewRequest(http.MethodGet, "/ues/imsi-001010000000001", nil)
+	lookupResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(lookupResponse, lookup)
+	if lookupResponse.Code != http.StatusOK {
+		t.Fatalf("expected lookup status %d, got %d", http.StatusOK, lookupResponse.Code)
+	}
+}
+
+func TestNASRejectsUnsupportedEnvelope(t *testing.T) {
+	server := NewServer("amf-001")
+	body := mustJSON(t, NASMessageRequest{
+		ProtocolDiscriminator: "EPS_MM",
+		SecurityHeaderType:    NASSecurityHeaderPlain,
+		MessageType:           NASMessageRegistrationRequest,
+		Payload: &NASMessagePayload{
+			SUPI:       "imsi-001010000000001",
+			PLMNID:     "00101",
+			AccessType: "3GPP_ACCESS",
+		},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/nas", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+	}
+}
+
 func TestProcedureEventsAreRecordedPerUE(t *testing.T) {
 	server := NewServer("amf-001")
 	supi := "imsi-001010000000001"

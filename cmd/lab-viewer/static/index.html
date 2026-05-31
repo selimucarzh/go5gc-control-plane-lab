@@ -97,8 +97,10 @@
             </div>
             <div class="button-row">
               <button type="button" id="registerBtn">Register UE</button>
+              <button type="button" id="authBtn">Authenticate</button>
               <button type="button" id="pduBtn">Create PDU Session</button>
               <button type="button" id="fullFlowBtn">Run Full Flow</button>
+              <button type="button" id="resetBtn" class="secondary-action">Reset State</button>
             </div>
           </form>
         </div>
@@ -111,6 +113,30 @@
           <ol id="timeline" class="timeline">
             <li class="empty">No calls yet.</li>
           </ol>
+        </div>
+      </section>
+
+      <section class="state-panel" aria-labelledby="stateTitle">
+        <div class="section-heading state-heading">
+          <div>
+            <h2 id="stateTitle">Live State</h2>
+            <p>AMF and SMF in-memory state from the local services.</p>
+          </div>
+          <button type="button" id="refreshStateBtn" class="secondary-action compact-action">Refresh</button>
+        </div>
+        <div class="state-grid">
+          <article>
+            <h3>AMF UE Contexts</h3>
+            <pre id="ueState">{ "count": 0, "items": [] }</pre>
+          </article>
+          <article>
+            <h3>SMF PDU Sessions</h3>
+            <pre id="sessionState">{ "count": 0, "items": [] }</pre>
+          </article>
+          <article>
+            <h3>AMF Procedure Events</h3>
+            <pre id="eventState">{ "count": 0, "items": [] }</pre>
+          </article>
         </div>
       </section>
 

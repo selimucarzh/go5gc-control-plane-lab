@@ -93,6 +93,71 @@ func TestCreatePDUSessionRejectsDeregisteredUE(t *testing.T) {
 	}
 }
 
+func TestPDUSessionCollectionListsAndResetsState(t *testing.T) {
+	amfServer := amf.NewServer("amf-001")
+	amfHTTP := httptest.NewServer(amfServer.Handler())
+	defer amfHTTP.Close()
+
+	registerUE(t, amfHTTP.URL)
+
+	smfServer := NewServer("smf-001", NewHTTPAMFClient(amfHTTP.URL, nil))
+	createPDUSession(t, smfServer, 10)
+	createPDUSession(t, smfServer, 11)
+
+	list := httptest.NewRequest(http.MethodGet, "/pdu-sessions", nil)
+	listResponse := httptest.NewRecorder()
+	smfServer.Handler().ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, listResponse.Code)
+	}
+
+	var payload SessionListResponse
+	if err := json.NewDecoder(listResponse.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode session list: %v", err)
+	}
+	if payload.Count != 2 {
+		t.Fatalf("expected 2 sessions, got %d", payload.Count)
+	}
+	if payload.Items[0].SessionID != 10 || payload.Items[1].SessionID != 11 {
+		t.Fatalf("expected sorted session ids 10 and 11, got %+v", payload.Items)
+	}
+
+	reset := httptest.NewRequest(http.MethodDelete, "/pdu-sessions", nil)
+	resetResponse := httptest.NewRecorder()
+	smfServer.Handler().ServeHTTP(resetResponse, reset)
+	if resetResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, resetResponse.Code)
+	}
+
+	listAfterReset := httptest.NewRequest(http.MethodGet, "/pdu-sessions", nil)
+	listAfterResetResponse := httptest.NewRecorder()
+	smfServer.Handler().ServeHTTP(listAfterResetResponse, listAfterReset)
+
+	var afterReset SessionListResponse
+	if err := json.NewDecoder(listAfterResetResponse.Body).Decode(&afterReset); err != nil {
+		t.Fatalf("decode session list after reset: %v", err)
+	}
+	if afterReset.Count != 0 {
+		t.Fatalf("expected empty session list, got %d", afterReset.Count)
+	}
+}
+
+func createPDUSession(t *testing.T, smfServer *Server, sessionID int) {
+	t.Helper()
+	body := mustJSON(t, models.PDUSessionRequest{
+		SUPI:      "imsi-001010000000001",
+		SessionID: sessionID,
+		DNN:       "internet",
+		SNSSAI:    models.SNSSAI{SST: 1, SD: "010203"},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pdu-sessions", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	smfServer.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d", http.StatusCreated, response.Code)
+	}
+}
+
 func registerUE(t *testing.T, baseURL string) {
 	t.Helper()
 	body := mustJSON(t, models.RegistrationRequest{

@@ -83,6 +83,14 @@ main {
   gap: 10px;
 }
 
+.button-row {
+  flex-wrap: wrap;
+}
+
+.button-row button {
+  flex: 1 1 150px;
+}
+
 .status-dot {
   min-width: 72px;
   border: 1px solid var(--line);
@@ -110,6 +118,7 @@ main {
 .topology,
 .control-panel,
 .trace-panel,
+.state-panel,
 .learning {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -118,6 +127,7 @@ main {
 }
 
 .topology,
+.state-panel,
 .learning {
   padding: 24px;
 }
@@ -268,11 +278,27 @@ button {
 }
 
 button:nth-child(2) {
-  background: #9a5f11;
+  background: #5b5f71;
 }
 
 button:nth-child(3) {
+  background: #9a5f11;
+}
+
+button:nth-child(4) {
   background: #1e5b9c;
+}
+
+.secondary-action {
+  background: #eef2ef;
+  color: var(--ink);
+}
+
+.compact-action {
+  width: auto;
+  min-width: 104px;
+  min-height: 38px;
+  padding-inline: 14px;
 }
 
 .timeline {
@@ -333,6 +359,32 @@ pre {
   line-height: 1.45;
 }
 
+.state-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.state-grid article {
+  min-width: 0;
+}
+
+.state-grid h3 {
+  min-height: 22px;
+}
+
+.state-grid pre {
+  max-height: 360px;
+}
+
 .learning-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -386,11 +438,14 @@ pre {
   .learning-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .state-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
   .field-grid,
-  .button-row,
   .status-strip {
     display: grid;
   }
